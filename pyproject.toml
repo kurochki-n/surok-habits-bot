@@ -1,0 +1,15 @@
+[project]
+name = "habit-tracker-bot"
+version = "0.1.0"
+description = "Telegram habit tracker with Rich Messages"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram==3.31.0",
+    "SQLAlchemy>=2.0.43,<3.0",
+    "aiosqlite>=0.21.0,<1.0",
+    "pydantic-settings>=2.10.1,<3.0",
+    "tzdata>=2025.2",
+]
+
+[tool.uv]
+package = false
