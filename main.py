@@ -11,7 +11,7 @@ from config_reader import get_settings
 from database.session import close_db, init_db
 from handlers.user_router import router as user_router
 from middlewares.db import DbSessionMiddleware
-from services.rich_messages import configure_bot_identity
+from services.rich_messages import ORIGINAL_BOT_USERNAME, configure_bot_identity
 from services.scheduler import scheduler_loop
 
 
@@ -28,6 +28,8 @@ async def main() -> None:
     )
     bot_username = (await bot.get_me()).username
     configure_bot_identity(bot_username)
+    if (bot_username or "").casefold() != ORIGINAL_BOT_USERNAME:
+        await bot.set_my_description(description="Оригинальный бот: @SurokHabitsBot")
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Открыть главное меню"),
