@@ -112,7 +112,7 @@ def build_stats_message(
         "done": "✅",
         "partial": "◐",
         "missed": "✕",
-        "pending": "·",
+        "pending": "*",
         "empty": " ",
         "future": " ",
     }
@@ -158,7 +158,7 @@ def build_stats_message(
         "</table>"
         f"<h4>{month_title}</h4>"
         f"<table compact><tr>{weekday_headers}</tr>{''.join(rows)}</table>"
-        "<footer>✅ выполнено · ◐ частично · ✕ пропущено · · сегодня в процессе</footer>"
+        "<footer>✅ выполнено · ◐ частично · ✕ пропущено · * сегодня в процессе</footer>"
     )
 
 

@@ -6,3 +6,4 @@ __pycache__/
 .idea/
 .vscode/
 .ruff_cache
+ssh.md
