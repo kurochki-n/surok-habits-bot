@@ -16,12 +16,16 @@ from database.repositories import (
     create_habit,
     create_reminder,
     deactivate_habit,
+    deactivate_reminder,
     ensure_habit_day,
     get_active_habits,
+    get_active_reminders,
     get_habit,
+    get_reminder,
     get_user_day,
     mark_repetition_done,
     remove_incomplete_habit_day,
+    reset_statistics,
     upsert_user,
 )
 from handlers.states import CreateHabit, CreateReminder
@@ -34,6 +38,8 @@ from services.habits import (
 from services.rich_messages import (
     build_delete_confirmation,
     build_habits_message,
+    build_reminder_delete_confirmation,
+    build_reminders_message,
     build_motivation_message,
     build_stats_message,
     build_weekdays_message,
@@ -147,6 +153,17 @@ async def start(message: Message, session: AsyncSession) -> None:
         message.from_user.username,
         get_settings().default_timezone,
     )
+    if (message.text or "").split(maxsplit=1)[1:] == ["reset_stats"]:
+        await send_screen(
+            message,
+            simple_rich(
+                "Сбросить статистику?",
+                "<p>Будут удалены история выполнений, серии и календарь. Привычки и напоминания останутся.</p>",
+                '<tg-button-row><tg-button type="callback_data" style="danger" data="stats:reset_confirm">Да, сбросить</tg-button>'
+                '<tg-button type="callback_data" data="stats:reset_cancel">Отмена</tg-button></tg-button-row>',
+            ),
+        )
+        return
     await send_screen(
         message,
         simple_rich(
@@ -173,14 +190,26 @@ def reminder_weekdays_message(selected_mask: int = 0):
     return wizard_rich("Напоминание · дни", "<p>Выбери дни.</p>" + "".join(rows))
 
 
-@router.message(Command("mem"))
-async def new_reminder(message: Message, state: FSMContext) -> None:
+async def begin_new_reminder(bot, chat_id: int, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(CreateReminder.text)
-    await send_screen(
-        message,
+    await send_rich(
+        bot,
+        chat_id,
         wizard_rich("Новое напоминание", "<p>Напиши текст напоминания.</p>"),
     )
+
+
+@router.message(Command("mem"))
+async def reminders_list(message: Message, session: AsyncSession) -> None:
+    reminders = await get_active_reminders(session, message.from_user.id)
+    await send_screen(message, build_reminders_message(reminders))
+
+
+@router.callback_query(F.data == "new:reminder")
+async def new_reminder_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    await begin_new_reminder(callback.bot, callback.from_user.id, state)
+    await callback.answer()
 
 
 @router.message(CreateReminder.text)
@@ -317,8 +346,23 @@ async def begin_new_habit(chat_message: Message, state: FSMContext) -> None:
 
 
 @router.message(Command("new"))
-async def new_habit(message: Message, state: FSMContext) -> None:
-    await begin_new_habit(message, state)
+async def new_item(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await send_screen(
+        message,
+        simple_rich(
+            "Создать",
+            "<p>Что ты хочешь создать?</p>",
+            '<tg-button-row><tg-button type="callback_data" style="primary" data="new:habit">Привычку</tg-button>'
+            '<tg-button type="callback_data" style="primary" data="new:reminder">Напоминание</tg-button></tg-button-row>',
+        ),
+    )
+
+
+@router.callback_query(F.data == "new:habit")
+async def new_habit_choice(callback: CallbackQuery, state: FSMContext) -> None:
+    await begin_new_habit(callback.message, state)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "habit:new")
@@ -601,6 +645,63 @@ async def delete_habit_cancel(callback: CallbackQuery, session: AsyncSession) ->
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("reminder:delete:"))
+async def delete_reminder_prompt(
+    callback: CallbackQuery, session: AsyncSession
+) -> None:
+    reminder_id = int(callback.data.rsplit(":", 1)[1])
+    reminder = await get_reminder(session, callback.from_user.id, reminder_id)
+    if reminder is None or not reminder.is_active:
+        await callback.answer("Напоминание уже удалено", show_alert=True)
+        return
+    if callback.message:
+        await callback.bot(
+            EditMessageText(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                rich_message=build_reminder_delete_confirmation(reminder),
+            )
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("reminder:confirm_delete:"))
+async def delete_reminder_confirm(
+    callback: CallbackQuery, session: AsyncSession
+) -> None:
+    reminder_id = int(callback.data.rsplit(":", 1)[1])
+    reminder = await deactivate_reminder(session, callback.from_user.id, reminder_id)
+    if reminder is None:
+        await callback.answer("Напоминание уже удалено", show_alert=True)
+        return
+    reminders = await get_active_reminders(session, callback.from_user.id)
+    if callback.message:
+        await callback.bot(
+            EditMessageText(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                rich_message=build_reminders_message(reminders),
+            )
+        )
+    await callback.answer("Напоминание удалено")
+
+
+@router.callback_query(F.data == "reminder:cancel_delete")
+async def delete_reminder_cancel(
+    callback: CallbackQuery, session: AsyncSession
+) -> None:
+    reminders = await get_active_reminders(session, callback.from_user.id)
+    if callback.message:
+        await callback.bot(
+            EditMessageText(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                rich_message=build_reminders_message(reminders),
+            )
+        )
+    await callback.answer()
+
+
 @router.message(Command("today"))
 async def today(message: Message, session: AsyncSession) -> None:
     await show_today(message.bot, message.chat.id, message.from_user.id, session)
@@ -668,6 +769,40 @@ async def complete_repetition(callback: CallbackQuery, session: AsyncSession) ->
         callback.from_user.id,
         build_motivation_message(title, body, streak),
     )
+
+
+@router.callback_query(F.data == "stats:reset_confirm")
+async def reset_statistics_confirm(
+    callback: CallbackQuery, session: AsyncSession
+) -> None:
+    await reset_statistics(session, callback.from_user.id)
+    if callback.message:
+        await callback.bot(
+            EditMessageText(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                rich_message=simple_rich(
+                    "Статистика сброшена",
+                    "<p>История выполнений, серии и календарь очищены. Привычки и напоминания сохранены.</p>",
+                ),
+            )
+        )
+    await callback.answer("Статистика сброшена")
+
+
+@router.callback_query(F.data == "stats:reset_cancel")
+async def reset_statistics_cancel(callback: CallbackQuery) -> None:
+    if callback.message:
+        await callback.bot(
+            EditMessageText(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                rich_message=simple_rich(
+                    "Сброс отменён", "<p>Статистика не изменена.</p>"
+                ),
+            )
+        )
+    await callback.answer()
 
 
 @router.callback_query(F.data == "open:stats")

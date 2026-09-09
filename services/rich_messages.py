@@ -5,21 +5,20 @@ from aiogram import Bot
 from aiogram.methods import EditMessageText, SendRichMessage
 from aiogram.types import InputRichMessage
 
-from database.models import Habit, HabitDay
+from database.models import Habit, HabitDay, Reminder
 from utils.dates import mask_to_text
 
 ORIGINAL_BOT_USERNAME = "surokhabitsbot"
-_show_original_bot_notice = False
+_bot_username: str | None = None
 
 
 def configure_bot_identity(bot_username: str | None) -> None:
-    global _show_original_bot_notice
-    _show_original_bot_notice = (bot_username or "").casefold() != ORIGINAL_BOT_USERNAME
+    global _bot_username
+    _bot_username = bot_username
 
 
 def rich_message(html: str) -> InputRichMessage:
-    notice = "<footer>Оригинальный бот: @SurokHabitsBot</footer>"
-    return InputRichMessage(html=f"{html}{notice if _show_original_bot_notice else ''}")
+    return InputRichMessage(html=html)
 
 
 def _repetition_labels(habit: Habit) -> list[str]:
@@ -95,6 +94,35 @@ def build_habits_message(habits: list[Habit]) -> InputRichMessage:
     return rich_message("".join(blocks))
 
 
+def build_reminders_message(reminders: list[Reminder]) -> InputRichMessage:
+    if not reminders:
+        return rich_message(
+            "<h3>Мои напоминания</h3><p>Напоминаний пока нет.</p>"
+            '<tg-button-row><tg-button type="callback_data" style="primary" data="new:reminder">Добавить напоминание</tg-button></tg-button-row>'
+        )
+    blocks = ["<h3>Мои напоминания</h3>"]
+    for reminder in reminders:
+        blocks.append(
+            f"<p><b>{escape(reminder.text)}</b><br>"
+            f"{escape(mask_to_text(reminder.weekdays_mask))} · {', '.join(reminder.reminder_times)}</p>"
+            f'<tg-button-row><tg-button type="callback_data" style="danger" data="reminder:delete:{reminder.id}">Удалить</tg-button></tg-button-row>'
+        )
+    blocks.append(
+        '<tg-button-row><tg-button type="callback_data" style="primary" data="new:reminder">+ Добавить напоминание</tg-button></tg-button-row>'
+    )
+    return rich_message("".join(blocks))
+
+
+def build_reminder_delete_confirmation(reminder: Reminder) -> InputRichMessage:
+    return rich_message(
+        "<h3>Удалить напоминание?</h3>"
+        f"<p><b>{escape(reminder.text)}</b><br>"
+        f"{escape(mask_to_text(reminder.weekdays_mask))} · {', '.join(reminder.reminder_times)}</p>"
+        f'<tg-button-row><tg-button type="callback_data" style="danger" data="reminder:confirm_delete:{reminder.id}">Да, удалить</tg-button>'
+        '<tg-button type="callback_data" data="reminder:cancel_delete">Отмена</tg-button></tg-button-row>'
+    )
+
+
 def build_delete_confirmation(habit: Habit) -> InputRichMessage:
     return rich_message(
         "<h3>Удалить привычку?</h3>"
@@ -158,7 +186,8 @@ def build_stats_message(
         "</table>"
         f"<h4>{month_title}</h4>"
         f"<table compact><tr>{weekday_headers}</tr>{''.join(rows)}</table>"
-        "<footer>✅ выполнено · ◐ частично · ✕ пропущено · * сегодня в процессе</footer>"
+        "<footer>✅ выполнено · ◐ частично · ✕ пропущено · * сегодня в процессе<br>"
+        f'<a href="https://t.me/{_bot_username}?start=reset_stats">Сбросить статистику</a></footer>'
     )
 
 

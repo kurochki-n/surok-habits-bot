@@ -29,12 +29,20 @@ async def main() -> None:
     bot_username = (await bot.get_me()).username
     configure_bot_identity(bot_username)
     if (bot_username or "").casefold() != ORIGINAL_BOT_USERNAME:
-        await bot.set_my_description(description="Оригинальный бот: @SurokHabitsBot")
+        attribution = "Оригинальный бот: @SurokHabitsBot"
+        short_description_updated = await bot.set_my_short_description(
+            short_description=attribution
+        )
+        logging.info(
+            "Updated short attribution for @%s: %s",
+            bot_username,
+            short_description_updated,
+        )
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Открыть главное меню"),
-            BotCommand(command="new", description="Создать привычку"),
-            BotCommand(command="mem", description="Создать напоминание"),
+            BotCommand(command="new", description="Создать привычку или напоминание"),
+            BotCommand(command="mem", description="Мои напоминания"),
             BotCommand(command="today", description="План на сегодня"),
             BotCommand(command="habits", description="Мои привычки"),
             BotCommand(command="stats", description="Статистика"),

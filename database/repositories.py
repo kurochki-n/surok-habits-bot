@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -83,6 +83,50 @@ async def create_reminder(
     session.add(reminder)
     await session.commit()
     await session.refresh(reminder)
+    return reminder
+
+
+async def reset_statistics(session: AsyncSession, user_id: int) -> None:
+    habit_ids = select(Habit.id).where(Habit.user_id == user_id)
+    habit_day_ids = select(HabitDay.id).where(HabitDay.habit_id.in_(habit_ids))
+    await session.execute(
+        delete(HabitRepetition).where(HabitRepetition.habit_day_id.in_(habit_day_ids))
+    )
+    await session.execute(delete(HabitDay).where(HabitDay.habit_id.in_(habit_ids)))
+    await session.execute(delete(DailyMessage).where(DailyMessage.user_id == user_id))
+
+    habits = list(await session.scalars(select(Habit).where(Habit.user_id == user_id)))
+    reset_time = datetime.now(timezone.utc)
+    for habit in habits:
+        habit.created_at = reset_time
+    await session.commit()
+
+
+async def get_active_reminders(session: AsyncSession, user_id: int) -> list[Reminder]:
+    result = await session.scalars(
+        select(Reminder)
+        .where(Reminder.user_id == user_id, Reminder.is_active.is_(True))
+        .order_by(Reminder.id)
+    )
+    return list(result)
+
+
+async def get_reminder(
+    session: AsyncSession, user_id: int, reminder_id: int
+) -> Reminder | None:
+    return await session.scalar(
+        select(Reminder).where(Reminder.id == reminder_id, Reminder.user_id == user_id)
+    )
+
+
+async def deactivate_reminder(
+    session: AsyncSession, user_id: int, reminder_id: int
+) -> Reminder | None:
+    reminder = await get_reminder(session, user_id, reminder_id)
+    if reminder is None or not reminder.is_active:
+        return None
+    reminder.is_active = False
+    await session.commit()
     return reminder
 
 
