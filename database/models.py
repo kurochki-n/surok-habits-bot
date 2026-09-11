@@ -25,6 +25,8 @@ class User(Base, TimestampMixin):
     last_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="Europe/Samara")
+    wake_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    sleep_time: Mapped[time | None] = mapped_column(Time, nullable=True)
 
     habits: Mapped[list["Habit"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

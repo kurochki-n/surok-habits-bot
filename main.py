@@ -47,6 +47,7 @@ async def main() -> None:
             BotCommand(command="habits", description="Мои привычки"),
             BotCommand(command="stats", description="Статистика"),
             BotCommand(command="timezone", description="Изменить часовой пояс"),
+            BotCommand(command="sleep", description="Настроить время подъёма и сна"),
         ]
     )
 

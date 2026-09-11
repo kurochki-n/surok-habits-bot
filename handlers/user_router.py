@@ -707,6 +707,78 @@ async def today(message: Message, session: AsyncSession) -> None:
     await show_today(message.bot, message.chat.id, message.from_user.id, session)
 
 
+@router.message(Command("sleep"))
+async def sleep_schedule(message: Message, session: AsyncSession) -> None:
+    """Set or disable the four daily notifications around the user's day."""
+    user = await session.get(User, message.from_user.id)
+    if user is None:
+        await send_screen(
+            message,
+            simple_rich(
+                "Сначала начни", "<p>Отправь /start, затем настрой расписание.</p>"
+            ),
+        )
+        return
+
+    args = (message.text or "").split()[1:]
+    if args == ["off"]:
+        user.wake_time = None
+        user.sleep_time = None
+        await session.commit()
+        await send_screen(
+            message,
+            simple_rich(
+                "Расписание отключено",
+                "<p>Уведомления по режиму дня больше не придут.</p>",
+            ),
+        )
+        return
+
+    if len(args) != 2:
+        await send_screen(
+            message,
+            simple_rich(
+                "Режим дня",
+                "<p>Укажи время подъёма и сна: <b>/sleep 07:00 23:00</b>.</p>"
+                "<p>Чтобы отключить эти уведомления: <b>/sleep off</b>.</p>",
+            ),
+        )
+        return
+
+    try:
+        wake_time, sleep_time = (time.fromisoformat(value) for value in args)
+    except ValueError:
+        await send_screen(
+            message,
+            simple_rich(
+                "Неверное время",
+                "<p>Используй формат <b>ЧЧ:ММ</b>, например /sleep 07:00 23:00.</p>",
+            ),
+        )
+        return
+
+    if wake_time == sleep_time:
+        await send_screen(
+            message,
+            simple_rich(
+                "Неверное расписание", "<p>Время подъёма и сна не должно совпадать.</p>"
+            ),
+        )
+        return
+
+    user.wake_time = wake_time
+    user.sleep_time = sleep_time
+    await session.commit()
+    await send_screen(
+        message,
+        simple_rich(
+            "Режим дня сохранён",
+            f"<p>Подъём: <b>{wake_time:%H:%M}</b> · сон: <b>{sleep_time:%H:%M}</b>.</p>"
+            "<p>Бот напомнит о плане через 15 минут после подъёма, дважды в течение дня и за 15 минут до сна.</p>",
+        ),
+    )
+
+
 @router.callback_query(F.data == "open:today")
 async def today_callback(callback: CallbackQuery, session: AsyncSession) -> None:
     await show_today(

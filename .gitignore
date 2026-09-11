@@ -7,3 +7,4 @@ __pycache__/
 .vscode/
 .ruff_cache
 ssh.md
+deploy.py

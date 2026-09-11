@@ -28,6 +28,17 @@ async def _migrate_sqlite_schema(connection) -> None:
             text("ALTER TABLE habits ADD COLUMN reminder_times JSON")
         )
 
+    user_columns = {
+        row["name"]
+        for row in (
+            await connection.execute(text("PRAGMA table_info(users)"))
+        ).mappings()
+    }
+    if "wake_time" not in user_columns:
+        await connection.execute(text("ALTER TABLE users ADD COLUMN wake_time TIME"))
+    if "sleep_time" not in user_columns:
+        await connection.execute(text("ALTER TABLE users ADD COLUMN sleep_time TIME"))
+
     repetition_columns = {
         row["name"]
         for row in (

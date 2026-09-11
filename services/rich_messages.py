@@ -197,7 +197,7 @@ def build_motivation_message(
     streak_line = f"<p>🔥 Активная серия: <b>{streak} дн.</b></p>" if streak else ""
     return rich_message(
         f"<h3>{escape(title)}</h3><p>{escape(body)}</p>{streak_line}"
-        '<tg-button-row><tg-button type="callback_data" style="primary" data="open:stats">Открыть статистику</tg-button></tg-button-row>'
+        '<tg-button-row><tg-button type="callback_data" style="primary" data="open:today">План на сегодня</tg-button></tg-button-row>'
     )
 
 
