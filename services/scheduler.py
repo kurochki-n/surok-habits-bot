@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, time, timezone
 from html import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -18,14 +18,10 @@ from database.repositories import (
 )
 from database.session import SessionFactory
 from services.habits import calculate_streak
-from services.rich_messages import (
-    build_motivation_message,
-    send_dashboard,
-    send_rich,
-    simple_rich,
-)
+from services.rich_messages import send_dashboard, send_rich, simple_rich
 
 logger = logging.getLogger(__name__)
+MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 def parse_reminder_times(values: list[str]) -> list[time]:
@@ -44,67 +40,9 @@ def reminder_times(habit: Habit) -> list[time]:
     ) or [habit.reminder_time]
 
 
-def routine_slots(user: User, local_now: datetime) -> tuple[date, list[datetime]]:
-    """Return four evenly spaced check-ins for the wake-day containing ``local_now``."""
-    if user.wake_time is None or user.sleep_time is None:
-        return local_now.date(), []
-
-    routine_day = local_now.date()
-    # A bedtime such as 00:30 belongs to the day that started before midnight.
-    if user.sleep_time <= user.wake_time and local_now.time() < user.wake_time:
-        routine_day -= timedelta(days=1)
-
-    wake_at = datetime.combine(routine_day, user.wake_time, tzinfo=local_now.tzinfo)
-    sleep_day = routine_day + timedelta(days=user.sleep_time <= user.wake_time)
-    sleep_at = datetime.combine(sleep_day, user.sleep_time, tzinfo=local_now.tzinfo)
-    first, last = wake_at + timedelta(minutes=15), sleep_at - timedelta(minutes=15)
-    if last <= first:
-        return routine_day, []
-
-    interval = (last - first) / 3
-    return routine_day, [first + interval * index for index in range(4)]
-
-
-async def send_routine_checkin(
-    bot: Bot,
-    session,
-    user: User,
-    local_now: datetime,
-    days,
-) -> bool:
-    """Send one of the four mode-of-day notifications, unless the plan is complete."""
-    if not days or all(day.is_completed for day in days):
-        return False
-
-    routine_day, slots = routine_slots(user, local_now)
-    messages = [
-        ("Доброе утро", "Новый день — новый шанс. Начни с небольшого шага."),
-        (
-            "Сверься с планом",
-            "У тебя ещё достаточно времени. Выбери следующее действие.",
-        ),
-        (
-            "День в разгаре",
-            "Продолжай в своём темпе — маленькие действия складываются в результат.",
-        ),
-        (
-            "До сна 15 минут",
-            "Проверь план и успей выполнить то, что важно для тебя сегодня.",
-        ),
-    ]
-    for index, slot in enumerate(slots):
-        kind = f"routine:{index}"
-        if local_now < slot or await notification_was_sent(
-            session, user.id, routine_day, kind
-        ):
-            continue
-        title, body = messages[index]
-        streak = await calculate_streak(session, user.id, routine_day)
-        await send_rich(bot, user.id, build_motivation_message(title, body, streak))
-        await send_dashboard(bot, user.id, days, streak)
-        await log_notification(session, user.id, routine_day, kind)
-        return True
-    return False
+def is_current_minute(now: datetime, scheduled: time) -> bool:
+    # Do not send a backlog of missed alerts after restarting the bot.
+    return (now.hour, now.minute) == (scheduled.hour, scheduled.minute)
 
 
 async def scheduler_loop(bot: Bot) -> None:
@@ -120,6 +58,8 @@ async def scheduler_loop(bot: Bot) -> None:
 
 
 async def tick(bot: Bot) -> None:
+    now = datetime.now(timezone.utc)
+    morning_due = is_current_minute(now.astimezone(MOSCOW), time(8, 0))
     async with SessionFactory() as session:
         users = list(await session.scalars(select(User)))
         for user in users:
@@ -127,7 +67,7 @@ async def tick(bot: Bot) -> None:
                 zone = ZoneInfo(user.timezone)
             except ZoneInfoNotFoundError:
                 zone = ZoneInfo(get_settings().default_timezone)
-            local_now = datetime.now(timezone.utc).astimezone(zone)
+            local_now = now.astimezone(zone)
             today = local_now.date()
 
             reminders = list(
@@ -142,9 +82,8 @@ async def tick(bot: Bot) -> None:
                     continue
                 for reminder_time in parse_reminder_times(reminder.reminder_times):
                     kind = f"mem:{reminder.id}:{reminder_time.strftime('%H%M')}"
-                    if (local_now.hour, local_now.minute) >= (
-                        reminder_time.hour,
-                        reminder_time.minute,
+                    if is_current_minute(
+                        local_now, reminder_time
                     ) and not await notification_was_sent(
                         session, user.id, today, kind
                     ):
@@ -152,8 +91,7 @@ async def tick(bot: Bot) -> None:
                             bot,
                             user.id,
                             simple_rich(
-                                "Напоминание",
-                                f"<p>{escape(reminder.text)}</p>",
+                                "Напоминание", f"<p>{escape(reminder.text)}</p>"
                             ),
                         )
                         await log_notification(session, user.id, today, kind)
@@ -166,18 +104,6 @@ async def tick(bot: Bot) -> None:
                 )
             )
             scheduled = [habit for habit in habits if habit.is_scheduled_for(today)]
-            routine_day, _ = routine_slots(user, local_now)
-            if routine_day != today:
-                # For a bedtime after midnight, the final check-in belongs to the
-                # plan made on the preceding wake-day.
-                routine_habits = [
-                    habit for habit in habits if habit.is_scheduled_for(routine_day)
-                ]
-                for habit in routine_habits:
-                    await ensure_habit_day(session, habit, routine_day)
-                routine_days = await get_user_day(session, user.id, routine_day)
-                await send_routine_checkin(bot, session, user, local_now, routine_days)
-                continue
             if not scheduled:
                 continue
 
@@ -186,97 +112,45 @@ async def tick(bot: Bot) -> None:
             days = await get_user_day(session, user.id, today)
             days_by_habit = {day.habit_id: day for day in days}
 
-            due_reminders = []
-            skipped_reminders = []
+            # This log is independent of /today: opening the plan manually must
+            # not suppress the daily 08:00 Moscow message.
+            if morning_due and not await notification_was_sent(
+                session, user.id, today, "morning"
+            ):
+                streak = await calculate_streak(session, user.id, today)
+                message = await send_dashboard(bot, user.id, days, streak)
+                message_row = await get_or_create_daily_message(session, user.id, today)
+                message_row.telegram_message_id = message.message_id
+                message_row.sent_at = now
+                await log_notification(session, user.id, today, "morning")
+
+            due_kinds = []
+            due_ids = set()
             for habit in scheduled:
                 for reminder in reminder_times(habit):
+                    if not is_current_minute(local_now, reminder):
+                        continue
                     kind = f"reminder:{habit.id}:{reminder.strftime('%H%M')}"
-                    if (local_now.hour, local_now.minute) < (
-                        reminder.hour,
-                        reminder.minute,
+                    if kind in due_kinds or await notification_was_sent(
+                        session, user.id, today, kind
                     ):
                         continue
-                    if await notification_was_sent(session, user.id, today, kind):
-                        continue
-                    if days_by_habit[habit.id].is_completed:
-                        # A finished habit must not keep sending its own time-based alerts.
-                        skipped_reminders.append(kind)
-                    else:
-                        due_reminders.append((habit, reminder, kind))
+                    due_kinds.append(kind)
+                    if not days_by_habit[habit.id].is_completed:
+                        due_ids.add(habit.id)
 
-            if due_reminders:
-                message_row = await get_or_create_daily_message(session, user.id, today)
-                due_ids = {habit.id for habit, _, _ in due_reminders}
-                due_days = [day for day in days if day.habit_id in due_ids]
-
-                if message_row.telegram_message_id is None and due_days:
+            if due_ids:
+                # A reminder coinciding with the morning plan needs no second
+                # message: the plan already contains all of today's habits.
+                if not morning_due:
+                    due_days = [day for day in days if day.habit_id in due_ids]
                     streak = await calculate_streak(session, user.id, today)
                     message = await send_dashboard(bot, user.id, due_days, streak)
+                    message_row = await get_or_create_daily_message(
+                        session, user.id, today
+                    )
                     message_row.telegram_message_id = message.message_id
-                    message_row.sent_at = datetime.now(timezone.utc)
-                    await session.commit()
-                elif not all(day.is_completed for day in days):
-                    habit_names = ", ".join(
-                        {habit.name for habit, _, _ in due_reminders}
-                    )
-                    await send_rich(
-                        bot,
-                        user.id,
-                        build_motivation_message(
-                            "Напоминание",
-                            f"Пора уделить время привычкам: {habit_names}.",
-                            await calculate_streak(session, user.id, today),
-                        ),
-                    )
+                    message_row.sent_at = now
 
-            for _, _, kind in due_reminders:
+            for kind in due_kinds:
                 await log_notification(session, user.id, today, kind)
-            for kind in skipped_reminders:
-                await log_notification(session, user.id, today, kind)
-
-            await send_routine_checkin(bot, session, user, local_now, days)
-
-            if not days or all(day.is_completed for day in days):
-                continue
-
-            # The four routine check-ins replace the fixed afternoon/evening nudges.
-            if user.wake_time is not None and user.sleep_time is not None:
-                continue
-
-            total = sum(day.repetitions_total for day in days)
-            done = sum(day.repetitions_done for day in days)
-            remaining = max(total - done, 0)
-            percent = round(done / total * 100) if total else 0
-            streak = await calculate_streak(session, user.id, today)
-
-            # Дневной мягкий нудж: один раз после 15:00 и только если есть что заканчивать.
-            if local_now.hour >= 15 and not await notification_was_sent(
-                session, user.id, today, "progress"
-            ):
-                if done == 0:
-                    body = f"Сегодня ещё не было отметок. Начни с одного действия — осталось {remaining}."
-                elif percent < 60:
-                    body = f"Уже есть прогресс: {done}/{total}. Осталось {remaining} — можно закрыть день без рывка вечером."
-                else:
-                    body = f"Ты уже сделал {percent}% плана. Осталось всего {remaining} — день почти закрыт."
-                await send_rich(
-                    bot,
-                    user.id,
-                    build_motivation_message("Небольшой шаг сейчас", body, streak),
-                )
-                await log_notification(session, user.id, today, "progress")
-
-            # Вечернее предупреждение о серии: один раз после 20:00.
-            if local_now.hour >= 20 and not await notification_was_sent(
-                session, user.id, today, "streak_risk"
-            ):
-                if streak > 0:
-                    body = f"До полного дня осталось {remaining}. Закрой их сегодня, чтобы сохранить серию {streak} дн."
-                    title = "Серия ещё в твоих руках"
-                else:
-                    body = f"Осталось {remaining}. Закрой сегодняшний план и начни новую серию с чистого дня."
-                    title = "Закрой день"
-                await send_rich(
-                    bot, user.id, build_motivation_message(title, body, streak)
-                )
-                await log_notification(session, user.id, today, "streak_risk")

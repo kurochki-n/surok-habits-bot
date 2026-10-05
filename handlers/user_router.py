@@ -40,7 +40,6 @@ from services.rich_messages import (
     build_habits_message,
     build_reminder_delete_confirmation,
     build_reminders_message,
-    build_motivation_message,
     build_stats_message,
     build_weekdays_message,
     edit_dashboard,
@@ -709,7 +708,7 @@ async def today(message: Message, session: AsyncSession) -> None:
 
 @router.message(Command("sleep"))
 async def sleep_schedule(message: Message, session: AsyncSession) -> None:
-    """Set or disable the four daily notifications around the user's day."""
+    """Keep the legacy command without enabling routine notifications."""
     user = await session.get(User, message.from_user.id)
     if user is None:
         await send_screen(
@@ -739,8 +738,8 @@ async def sleep_schedule(message: Message, session: AsyncSession) -> None:
             message,
             simple_rich(
                 "Режим дня",
-                "<p>Укажи время подъёма и сна: <b>/sleep 07:00 23:00</b>.</p>"
-                "<p>Чтобы отключить эти уведомления: <b>/sleep off</b>.</p>",
+                "<p>Уведомления по режиму дня отключены.</p>"
+                "<p>Остались только заданные напоминания и план привычек в 08:00 по Москве.</p>",
             ),
         )
         return
@@ -774,7 +773,7 @@ async def sleep_schedule(message: Message, session: AsyncSession) -> None:
         simple_rich(
             "Режим дня сохранён",
             f"<p>Подъём: <b>{wake_time:%H:%M}</b> · сон: <b>{sleep_time:%H:%M}</b>.</p>"
-            "<p>Бот напомнит о плане через 15 минут после подъёма, дважды в течение дня и за 15 минут до сна.</p>",
+            "<p>Уведомления по режиму дня отключены. Это расписание не создаёт новых уведомлений.</p>",
         ),
     )
 
@@ -815,32 +814,6 @@ async def complete_repetition(callback: CallbackQuery, session: AsyncSession) ->
         return
 
     await callback.answer(f"{habit_day.habit.name} выполнена!")
-    if not days or not all(item.is_completed for item in days):
-        return
-
-    data = await stats(session, callback.from_user.id, day)
-    streak = int(data["streak"])
-    best = int(data["best_streak"])
-    milestones = {3, 7, 14, 21, 30, 50, 75, 100, 180, 365}
-
-    if streak in milestones:
-        title = f"Серия {streak} дней"
-        body = "Это уже не случайность — привычка закрепляется. Продолжай держать темп."
-    elif streak == best and streak > 1:
-        title = "Новый рекорд серии"
-        body = f"Сегодня ты обновил личный рекорд: {streak} дня подряд без пропусков."
-    elif streak <= 1:
-        title = "День закрыт"
-        body = "Все привычки выполнены. Первый шаг новой серии уже есть."
-    else:
-        title = "Все выполнено"
-        body = f"Сегодняшний план закрыт полностью. Серия продолжается: {streak} дн."
-
-    await send_rich(
-        callback.bot,
-        callback.from_user.id,
-        build_motivation_message(title, body, streak),
-    )
 
 
 @router.callback_query(F.data == "stats:reset_confirm")
