@@ -43,7 +43,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(scheduler, "SessionFactory", self.sessions),
             patch.object(scheduler, "datetime", FrozenDatetime),
             patch.object(scheduler, "send_dashboard", self.dashboard),
-            patch.object(scheduler, "send_rich", self.rich),
+            patch("services.rich_messages.send_rich", self.rich),
         ]
         for item in self.patches:
             item.start()
@@ -82,6 +82,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_morning_is_moscow_time_and_sent_once_even_after_manual_today(self):
         await self.add_habit()
+        await self.add_habit(times=["17:00"])
         async with self.sessions() as session:
             session.add(
                 DailyMessage(
@@ -98,7 +99,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         await scheduler.tick(None)
         await scheduler.tick(None)
         self.dashboard.assert_awaited_once()
-        self.assertEqual(len(self.dashboard.call_args.args[2]), 1)
+        self.assertEqual(len(self.dashboard.call_args.args[2]), 2)
         self.rich.assert_not_awaited()
 
     async def test_no_plan_for_empty_or_unscheduled_or_inactive_habits(self):
@@ -108,7 +109,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.dashboard.assert_not_awaited()
         self.rich.assert_not_awaited()
 
-    async def test_only_selected_habit_times_no_routine_or_overdue_alerts(self):
+    async def test_individual_habit_times_never_send_notifications(self):
         await self.add_habit(times=["10:00", "12:00"])
         for hour, minute in [(3, 15), (6, 1), (7, 59), (11, 0), (16, 0), (18, 45)]:
             self.set_clock(hour, minute)
@@ -119,7 +120,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.set_clock(hour, 0)
             await scheduler.tick(None)
             await scheduler.tick(None)
-        self.assertEqual(self.dashboard.await_count, 2)
+        self.dashboard.assert_not_awaited()
         self.rich.assert_not_awaited()
 
     async def test_completed_habit_has_morning_plan_but_no_scheduled_reminder(self):
@@ -138,9 +139,9 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.dashboard.assert_awaited_once()
         async with self.sessions() as session:
             kinds = list(await session.scalars(select(NotificationLog.kind)))
-        self.assertCountEqual(kinds, ["morning", "reminder:1:0900"])
+        self.assertCountEqual(kinds, ["morning"])
 
-    async def test_plain_reminders_respect_day_time_and_deduplication(self):
+    async def test_plain_reminders_do_not_send_automatic_notifications(self):
         async with self.sessions() as session:
             session.add_all(
                 [
@@ -173,7 +174,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.set_clock(hour, 0)
             await scheduler.tick(None)
             await scheduler.tick(None)
-        self.assertEqual(self.rich.await_count, 2)
+        self.rich.assert_not_awaited()
         self.dashboard.assert_not_awaited()
 
     async def test_completing_plan_does_not_send_congratulation(self):
